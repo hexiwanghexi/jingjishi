@@ -1,0 +1,9 @@
+{
+  "name": "经济师刷题 · 人力资源管理",
+  "short_name": "经济师刷题",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#f4f5fa",
+  "theme_color": "#4f6ef7",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
