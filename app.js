@@ -114,7 +114,7 @@ const ROUTES = {};
 let CUR_TAB = 'chapters';
 let SESSION = null; // 进行中的答题会话
 
-function nav(hash) { location.hash = hash; }
+function nav(hash) { if (location.hash === hash) render(); else location.hash = hash; }
 
 window.addEventListener('hashchange', render);
 
@@ -130,7 +130,7 @@ function render() {
   window.scrollTo(0, 0);
   const inSession = name === 'session';
   $('#tabbar').style.display = inSession ? 'none' : 'flex';
-  $('#btn-back').hidden = !inSession;
+  $('#btn-back').hidden = !(inSession || name === 'picker');
   $('#topbar-right').innerHTML = '';
   if (ROUTES[name]) {
     $('#topbar-title').textContent = ROUTES[name].title(args);
@@ -149,7 +149,10 @@ function render() {
 
 document.querySelectorAll('.tab').forEach(el =>
   el.addEventListener('click', () => nav('#/' + el.dataset.tab)));
-$('#btn-back').addEventListener('click', () => history.back());
+$('#btn-back').addEventListener('click', () => {
+  if (location.hash.startsWith('#/picker/')) { nav('#/chapters'); return; }
+  history.back();
+});
 
 /* ============ 视图：章节 ============ */
 ROUTES.chapters = {
@@ -195,28 +198,72 @@ ROUTES.chapters = {
   },
   after() {
     document.querySelectorAll('[data-ch]').forEach(el =>
-      el.addEventListener('click', () => startSession('chapter', +el.dataset.ch)));
+      el.addEventListener('click', () => nav('#/picker/' + el.dataset.ch)));
+  }
+};
+
+/* ============ 视图：章节选题 ============ */
+ROUTES.picker = {
+  title: (args) => { const i = +args[0]; return `第${i+1}章 ${CHAPTER_UNITS[i].chapter.title}`; },
+  render(args) {
+    const i = +args[0];
+    const c = CHAPTER_UNITS[i];
+    const doneN = c.ids.filter(id => P.q[id]?.done).length;
+    const groups = [{ label: '核心母题', g: 'master', list: [] }, { label: '章节练习', g: 'extra', list: [] }];
+    c.ids.forEach((id, k) => groups[id.includes('-p') ? 1 : 0].list.push({ id, k }));
+    const cellCls = id => {
+      const r = P.q[id];
+      if (!r || !r.attempts) return 'todo';
+      if (isMastered(id)) return 'master';
+      return r.done ? 'ok' : 'bad';
+    };
+    const grid = g => `<div class="sec-title">${g.label}</div><div class="q-grid" data-g="${g.g}">${
+      g.list.map((it, n) => `<button class="q-cell ${cellCls(it.id)}" data-k="${it.k}">${n+1}</button>`).join('')}</div>`;
+    const undoN = c.ids.length - doneN;
+    return `
+    <div class="card picker-head">
+      <div class="bar"><i style="width:${Math.round(doneN/c.ids.length*100)}%"></i></div>
+      <div class="meta"><span>共 ${c.ids.length} 题</span><span>已答对 ${doneN}</span></div>
+    </div>
+    ${groups[0].list.length ? grid(groups[0]) : ''}
+    ${groups[1].list.length ? grid(groups[1]) : ''}
+    <div class="legend">
+      <span><i class="sw todo"></i>未做</span><span><i class="sw bad"></i>错过</span>
+      <span><i class="sw ok"></i>答对过</span><span><i class="sw master">★</i>彻底掌握</span>
+    </div>
+    <div class="picker-actions">
+      <button class="btn" id="btn-all">顺序刷全章</button>
+      ${undoN ? `<button class="btn subtle" id="btn-undo">只刷未掌握（${undoN}）</button>` : ''}
+    </div>`;
+  },
+  after(args) {
+    const i = +args[0];
+    document.querySelectorAll('.q-cell').forEach(el =>
+      el.addEventListener('click', () => startSession('chapter', i, +el.dataset.k)));
+    $('#btn-all')?.addEventListener('click', () => startSession('chapter', i));
+    $('#btn-undo')?.addEventListener('click', () => startSession('chapter_undo', i));
   }
 };
 
 /* ============ 答题会话 ============ */
-function startSession(kind, chapterIdx) {
+function startSession(kind, chapterIdx, fromIdx = 0) {
   let ids = [], title = '';
+  const chapTitle = `第${chapterIdx+1}章 ${CHAPTER_UNITS[chapterIdx].chapter.title}`;
   if (kind === 'chapter') {
-    ids = [...CHAPTER_UNITS[chapterIdx].ids];
-    title = `第${chapterIdx+1}章 ${CHAPTER_UNITS[chapterIdx].chapter.title}`;
+    ids = CHAPTER_UNITS[chapterIdx].ids.slice(fromIdx);
+    title = chapTitle;
+  } else if (kind === 'chapter_undo') {
+    ids = CHAPTER_UNITS[chapterIdx].ids.filter(id => !P.q[id]?.done);
+    title = chapTitle + ' · 未掌握';
   } else if (kind === 'review') {
     ids = dueIds().sort();
     title = '今日复习';
   } else if (kind === 'wrong') {
     ids = wrongIds().sort();
     title = '错题重刷';
-  } else if (kind === 'redo') { // 章内未掌握
-    ids = SESSION.redoSource.filter(id => !(P.q[id]?.done));
-    title = SESSION.title + ' · 未掌握';
   }
   if (!ids.length) { toast(kind === 'review' ? '今天没有到期的复习题' : '没有可刷的题'); return; }
-  SESSION = { kind, chapterIdx, title, queue: ids, idx: 0, answered: 0, correct: 0, redoSource: kind === 'chapter' ? [...ids] : null };
+  SESSION = { kind, chapterIdx, title, queue: ids, idx: 0, answered: 0, correct: 0 };
   nav('#/session');
 }
 
@@ -345,10 +392,11 @@ function bindSummary() {
   const box = $('#sum-btns');
   if (!box) return;
   const mk = (text, cls, fn) => { const b = document.createElement('button'); b.className = 'btn ' + cls; b.textContent = text; b.style.marginTop = '10px'; b.addEventListener('click', fn); return b; };
-  if (SESSION.kind === 'chapter') {
-    const undone = SESSION.redoSource.filter(id => !P.q[id]?.done).length;
-    if (undone) box.appendChild(mk(`只刷未掌握的题（${undone}）`, 'subtle', () => startSession('redo')));
+  if (SESSION.kind === 'chapter' || SESSION.kind === 'chapter_undo') {
+    const undone = CHAPTER_UNITS[SESSION.chapterIdx].ids.filter(id => !P.q[id]?.done).length;
+    if (undone) box.appendChild(mk(`只刷未掌握的题（${undone}）`, 'subtle', () => startSession('chapter_undo', SESSION.chapterIdx)));
     box.appendChild(mk('再刷一遍全章', 'subtle', () => startSession('chapter', SESSION.chapterIdx)));
+    box.appendChild(mk('返回选题', 'ghost', () => nav('#/picker/' + SESSION.chapterIdx)));
     box.appendChild(mk('返回章节列表', 'ghost', () => nav('#/chapters')));
   } else {
     box.appendChild(mk(SESSION.kind === 'review' ? '返回复习页' : '返回错题本', 'ghost', () =>
@@ -524,7 +572,7 @@ ROUTES.settings = {
     </div>
     <div class="card" style="font-size:.8rem;color:var(--sub);line-height:1.8">
       <b style="color:var(--text)">关于</b><br>
-      题库：中级经济师《人力资源管理专业知识和实务》核心母题 505 题（含 1 道案例分析题）<br>
+      题库：中级经济师《人力资源管理专业知识和实务》核心母题 505 题 + 章节练习 454 题，共 959 题<br>
       数据：所有进度仅保存在本机浏览器中，不上传任何服务器<br>
       小技巧：用手机浏览器的"添加到主屏幕"，即可像 App 一样全屏刷题
     </div>
