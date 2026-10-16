@@ -10,6 +10,13 @@ const dstr = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}
 const today = () => dstr(new Date());
 const addDays = (base, n) => { const d = new Date(base + 'T00:00:00'); d.setDate(d.getDate()+n); return dstr(d); };
 const LETTERS = ['A','B','C','D','E'];
+const ringSvg = pct => { const r = 30, c = 2 * Math.PI * r;
+  return `<div class="ring"><svg viewBox="0 0 74 74">
+    <circle cx="37" cy="37" r="${r}" fill="none" stroke="var(--line)" stroke-width="7"/>
+    <circle cx="37" cy="37" r="${r}" fill="none" stroke="var(--accent)" stroke-width="7"
+      stroke-linecap="round" stroke-dasharray="${(c*pct/100).toFixed(1)} ${c.toFixed(1)}"/>
+  </svg><div class="num">${pct}%</div></div>`;
+};
 
 function toast(msg) {
   let t = $('#toast');
@@ -34,28 +41,38 @@ function modal({title, body, buttons}) {
 
 /* ============ 题库加载 ============ */
 let BANK = null;
-let UNITS = {};          // id -> unit
-let CHAPTER_UNITS = [];  // [{chapter, ids:[]}]
-let TOTAL = 0;
+let UNITS = {};          // id -> unit（两科合并，复习/错题本共用）
+let CHAPTER_UNITS = [];  // 人力 [{chapter, ids:[]}]
+let ECON_UNITS = [];     // 经济 [{chapter, ids:[]}]
+let TOTAL = 0, HR_TOTAL = 0, ECON_TOTAL = 0;
 
 async function loadBank() {
   BANK = window.BANK_DATA;
-  for (const chap of BANK.chapters) {
-    const ids = [];
-    for (const q of chap.questions) {
-      if (q.type === 'case') {
-        for (const sub of q.subQuestions) {
-          UNITS[sub.id] = { ...sub, badgeType: 'case', material: q.material, chapterId: chap.id };
-          ids.push(sub.id);
+  const build = (subject, store) => {
+    let total = 0;
+    for (const chap of subject.chapters) {
+      const ids = [];
+      for (const q of chap.questions) {
+        if (q.type === 'case') {
+          for (const sub of q.subQuestions) {
+            if (UNITS[sub.id]) console.warn('重复题号:', sub.id);
+            UNITS[sub.id] = { ...sub, badgeType: 'case', material: q.material, chapterId: chap.id, subject: subject.id };
+            ids.push(sub.id);
+          }
+        } else {
+          if (UNITS[q.id]) console.warn('重复题号:', q.id);
+          UNITS[q.id] = { ...q, badgeType: q.type, chapterId: chap.id, subject: subject.id };
+          ids.push(q.id);
         }
-      } else {
-        UNITS[q.id] = { ...q, badgeType: q.type, chapterId: chap.id };
-        ids.push(q.id);
       }
+      store.push({ chapter: chap, ids });
+      total += ids.length;
     }
-    CHAPTER_UNITS.push({ chapter: chap, ids });
-    TOTAL += ids.length;
-  }
+    return total;
+  };
+  HR_TOTAL = build(BANK.subjects.find(s => s.id === 'hr'), CHAPTER_UNITS);
+  ECON_TOTAL = build(BANK.subjects.find(s => s.id === 'econ'), ECON_UNITS);
+  TOTAL = HR_TOTAL + ECON_TOTAL;
 }
 
 /* ============ 进度存取 ============ */
@@ -130,11 +147,11 @@ function render() {
   window.scrollTo(0, 0);
   const inSession = name === 'session';
   $('#tabbar').style.display = inSession ? 'none' : 'flex';
-  $('#btn-back').hidden = !(inSession || name === 'picker');
+  $('#btn-back').hidden = !(inSession || name === 'picker' || name === 'settings');
   $('#topbar-right').innerHTML = '';
   if (ROUTES[name]) {
     $('#topbar-title').textContent = ROUTES[name].title(args);
-    CUR_TAB = ['chapters','review','wrong','stats','settings'].includes(name) ? name : CUR_TAB;
+    CUR_TAB = ['chapters','econ','review','wrong','stats'].includes(name) ? name : CUR_TAB;
     view.innerHTML = ROUTES[name].render(args);
     ROUTES[name].after?.(args);
   } else {
@@ -151,6 +168,7 @@ document.querySelectorAll('.tab').forEach(el =>
   el.addEventListener('click', () => nav('#/' + el.dataset.tab)));
 $('#btn-back').addEventListener('click', () => {
   if (location.hash.startsWith('#/picker/')) { nav('#/chapters'); return; }
+  if (location.hash.startsWith('#/settings')) { nav('#/stats'); return; }
   history.back();
 });
 
@@ -161,21 +179,13 @@ ROUTES.chapters = {
     const overall = (() => {
       let done = 0;
       CHAPTER_UNITS.forEach((c, i) => done += chapterDone(i).done);
-      return Math.round(done / TOTAL * 100);
+      return Math.round(done / HR_TOTAL * 100);
     })();
     const due = dueIds().length;
-    let ring = '';
-    { const r = 30, c = 2 * Math.PI * r;
-      ring = `<div class="ring"><svg viewBox="0 0 74 74">
-        <circle cx="37" cy="37" r="${r}" fill="none" stroke="var(--line)" stroke-width="7"/>
-        <circle cx="37" cy="37" r="${r}" fill="none" stroke="var(--accent)" stroke-width="7"
-          stroke-linecap="round" stroke-dasharray="${(c*overall/100).toFixed(1)} ${c.toFixed(1)}"/>
-      </svg><div class="num">${overall}%</div></div>`;
-    }
-    const hero = `<div class="card hero">${ring}
+    const hero = `<div class="card hero">${ringSvg(overall)}
       <div class="hero-info">
         <h2>人力资源管理专业知识和实务</h2>
-        <p>中级经济师 · 19 章 · 共 ${TOTAL} 题</p>
+        <p>中级经济师 · ${CHAPTER_UNITS.length} 章 · 共 ${HR_TOTAL} 题</p>
         <div class="hero-tags">
           <span class="tag">今日待复习 ${due}</span>
           <span class="tag ${overall >= 100 ? 'ok' : 'warn'}">总进度 ${overall}%</span>
@@ -248,16 +258,18 @@ ROUTES.picker = {
 /* ============ 答题会话 ============ */
 function startSession(kind, chapterIdx, fromIdx = 0) {
   let ids = [], title = '';
-  const chapTitle = `第${chapterIdx+1}章 ${CHAPTER_UNITS[chapterIdx].chapter.title}`;
   if (kind === 'chapter') {
     ids = CHAPTER_UNITS[chapterIdx].ids.slice(fromIdx);
-    title = chapTitle;
+    title = `第${chapterIdx+1}章 ${CHAPTER_UNITS[chapterIdx].chapter.title}`;
   } else if (kind === 'chapter_undo') {
     ids = CHAPTER_UNITS[chapterIdx].ids.filter(id => !P.q[id]?.done);
-    title = chapTitle + ' · 未掌握';
+    title = `第${chapterIdx+1}章 ${CHAPTER_UNITS[chapterIdx].chapter.title} · 未掌握`;
   } else if (kind === 'review') {
     ids = dueIds().sort();
     title = '今日复习';
+  } else if (kind === 'econ') {
+    ids = ECON_UNITS[chapterIdx].ids.slice(fromIdx);
+    title = `第${chapterIdx+1}章 ${ECON_UNITS[chapterIdx].chapter.title}`;
   } else if (kind === 'wrong') {
     ids = wrongIds().sort();
     title = '错题重刷';
@@ -398,6 +410,9 @@ function bindSummary() {
     box.appendChild(mk('再刷一遍全章', 'subtle', () => startSession('chapter', SESSION.chapterIdx)));
     box.appendChild(mk('返回选题', 'ghost', () => nav('#/picker/' + SESSION.chapterIdx)));
     box.appendChild(mk('返回章节列表', 'ghost', () => nav('#/chapters')));
+  } else if (SESSION.kind === 'econ') {
+    box.appendChild(mk('再刷一遍本章', 'subtle', () => startSession('econ', SESSION.chapterIdx)));
+    box.appendChild(mk('返回经济基础', 'ghost', () => nav('#/econ')));
   } else {
     box.appendChild(mk(SESSION.kind === 'review' ? '返回复习页' : '返回错题本', 'ghost', () =>
       nav(SESSION.kind === 'review' ? '#/review' : '#/wrong')));
@@ -444,6 +459,42 @@ ROUTES.review = {
   }
 };
 
+/* ============ 视图：经济基础 ============ */
+ROUTES.econ = {
+  title: () => '经济基础知识',
+  render() {
+    const overall = (() => {
+      let done = 0;
+      ECON_UNITS.forEach(c => done += c.ids.filter(id => P.q[id]?.done).length);
+      return Math.round(done / ECON_TOTAL * 100);
+    })();
+    const due = dueIds().length;
+    const hero = `<div class="card hero">${ringSvg(overall)}
+      <div class="hero-info">
+        <h2>经济基础知识</h2>
+        <p>中级经济师 · ${ECON_UNITS.length} 章 · 共 ${ECON_TOTAL} 题</p>
+        <div class="hero-tags">
+          <span class="tag">今日待复习 ${due}</span>
+          <span class="tag ${overall >= 100 ? 'ok' : 'warn'}">总进度 ${overall}%</span>
+        </div>
+      </div>
+    </div>`;
+    const list = ECON_UNITS.map((c, i) => `
+      <button class="card chapter" data-ech="${i}">
+        <div class="row1">
+          <span class="no">${i+1}</span>
+          <span class="name">${esc(c.chapter.title)}</span>
+          <span class="pct">${c.ids.length} 题</span>
+        </div>
+      </button>`).join('');
+    return hero + list;
+  },
+  after() {
+    document.querySelectorAll('[data-ech]').forEach(el =>
+      el.addEventListener('click', () => startSession('econ', +el.dataset.ech)));
+  }
+};
+
 /* ============ 视图：错题本 ============ */
 ROUTES.wrong = {
   title: () => '错题本',
@@ -460,7 +511,7 @@ ROUTES.wrong = {
       return `<button class="card wrong-item" data-id="${id}">
         <div class="info">
           <div class="stem-line">${esc(u.stem)}</div>
-          <div class="sub-line">第${u.chapterId}章 · 错过 ${r.wrong} 次 · ${r.due ? '下次复习 ' + r.due.slice(5) : ''}</div>
+          <div class="sub-line">${u.subject === 'econ' ? '经济' : '人力'} · 第${u.chapterId}章 · 错过 ${r.wrong} 次 · ${r.due ? '下次复习 ' + r.due.slice(5) : ''}</div>
         </div><span class="go">重刷</span>
       </button>`;
     }).join('');
@@ -527,6 +578,16 @@ ROUTES.stats = {
     </div>`;
   },
   after() {
+    // render() 会清空 #topbar-right，但 stats._rerender() 直调 after() 不清空，需幂等守卫
+    if (!$('#btn-settings-top')) {
+      const gear = document.createElement('button');
+      gear.id = 'btn-settings-top';
+      gear.className = 'icon-btn';
+      gear.setAttribute('aria-label', '设置');
+      gear.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm8.4 4a8.4 8.4 0 0 0-.12-1.4l2.02-1.56-2-3.46-2.4.96a8.5 8.5 0 0 0-2.42-1.4L15.1 2.6h-4l-.38 2.54a8.5 8.5 0 0 0-2.42 1.4l-2.4-.96-2 3.46 2.02 1.56a8.4 8.4 0 0 0 0 2.8L3.9 15.08l2 3.46 2.4-.96a8.5 8.5 0 0 0 2.42 1.4l.38 2.54h4l.38-2.54a8.5 8.5 0 0 0 2.42-1.4l2.4.96 2-3.46-2.02-1.56c.08-.46.12-.93.12-1.4z"/></svg>';
+      gear.addEventListener('click', () => nav('#/settings'));
+      $('#topbar-right').appendChild(gear);
+    }
     $('#cal-prev')?.addEventListener('click', () => {
       CAL_MONTH[1]--; if (CAL_MONTH[1] < 0) { CAL_MONTH[1] = 11; CAL_MONTH[0]--; }
       ROUTES.stats._rerender();
@@ -572,7 +633,7 @@ ROUTES.settings = {
     </div>
     <div class="card" style="font-size:.8rem;color:var(--sub);line-height:1.8">
       <b style="color:var(--text)">关于</b><br>
-      题库：中级经济师《人力资源管理专业知识和实务》核心母题 505 题 + 章节练习 454 题，共 959 题<br>
+      题库：中级经济师双科目——人力资源管理（核心母题 505 + 章节练习 454）、经济基础（历年真题 809），共 1768 题<br>
       数据：所有进度仅保存在本机浏览器中，不上传任何服务器<br>
       小技巧：用手机浏览器的"添加到主屏幕"，即可像 App 一样全屏刷题
     </div>
