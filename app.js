@@ -167,6 +167,7 @@ function render() {
 document.querySelectorAll('.tab').forEach(el =>
   el.addEventListener('click', () => nav('#/' + el.dataset.tab)));
 $('#btn-back').addEventListener('click', () => {
+  if (location.hash.startsWith('#/picker/econ')) { nav('#/econ'); return; }
   if (location.hash.startsWith('#/picker/')) { nav('#/chapters'); return; }
   if (location.hash.startsWith('#/settings')) { nav('#/stats'); return; }
   history.back();
@@ -213,13 +214,22 @@ ROUTES.chapters = {
 };
 
 /* ============ 视图：章节选题 ============ */
+// args: [章索引] → 人力；['econ', 章索引] → 经济基础
+function pickerCtx(args) {
+  if (args[0] === 'econ') return { subject: 'econ', units: ECON_UNITS, i: +args[1] };
+  return { subject: 'hr', units: CHAPTER_UNITS, i: +args[0] };
+}
+
 ROUTES.picker = {
-  title: (args) => { const i = +args[0]; return `第${i+1}章 ${CHAPTER_UNITS[i].chapter.title}`; },
+  title: (args) => { const { units, i } = pickerCtx(args); return `第${i+1}章 ${units[i].chapter.title}`; },
   render(args) {
-    const i = +args[0];
-    const c = CHAPTER_UNITS[i];
+    const { subject, units, i } = pickerCtx(args);
+    const c = units[i];
     const doneN = c.ids.filter(id => P.q[id]?.done).length;
-    const groups = [{ label: '核心母题', g: 'master', list: [] }, { label: '章节练习', g: 'extra', list: [] }];
+    const groups = [
+      { label: subject === 'econ' ? '历年真题' : '核心母题', g: 'master', list: [] },
+      { label: '章节练习', g: 'extra', list: [] }
+    ];
     c.ids.forEach((id, k) => groups[id.includes('-p') ? 1 : 0].list.push({ id, k }));
     const cellCls = id => {
       const r = P.q[id];
@@ -247,11 +257,13 @@ ROUTES.picker = {
     </div>`;
   },
   after(args) {
-    const i = +args[0];
+    const { subject, i } = pickerCtx(args);
+    const kindAll = subject === 'econ' ? 'econ' : 'chapter';
+    const kindUndo = subject === 'econ' ? 'econ_undo' : 'chapter_undo';
     document.querySelectorAll('.q-cell').forEach(el =>
-      el.addEventListener('click', () => startSession('chapter', i, +el.dataset.k)));
-    $('#btn-all')?.addEventListener('click', () => startSession('chapter', i));
-    $('#btn-undo')?.addEventListener('click', () => startSession('chapter_undo', i));
+      el.addEventListener('click', () => startSession(kindAll, i, +el.dataset.k)));
+    $('#btn-all')?.addEventListener('click', () => startSession(kindAll, i));
+    $('#btn-undo')?.addEventListener('click', () => startSession(kindUndo, i));
   }
 };
 
@@ -270,6 +282,9 @@ function startSession(kind, chapterIdx, fromIdx = 0) {
   } else if (kind === 'econ') {
     ids = ECON_UNITS[chapterIdx].ids.slice(fromIdx);
     title = `第${chapterIdx+1}章 ${ECON_UNITS[chapterIdx].chapter.title}`;
+  } else if (kind === 'econ_undo') {
+    ids = ECON_UNITS[chapterIdx].ids.filter(id => !P.q[id]?.done);
+    title = `第${chapterIdx+1}章 ${ECON_UNITS[chapterIdx].chapter.title} · 未掌握`;
   } else if (kind === 'wrong') {
     ids = wrongIds().sort();
     title = '错题重刷';
@@ -410,8 +425,11 @@ function bindSummary() {
     box.appendChild(mk('再刷一遍全章', 'subtle', () => startSession('chapter', SESSION.chapterIdx)));
     box.appendChild(mk('返回选题', 'ghost', () => nav('#/picker/' + SESSION.chapterIdx)));
     box.appendChild(mk('返回章节列表', 'ghost', () => nav('#/chapters')));
-  } else if (SESSION.kind === 'econ') {
+  } else if (SESSION.kind === 'econ' || SESSION.kind === 'econ_undo') {
+    const undone = ECON_UNITS[SESSION.chapterIdx].ids.filter(id => !P.q[id]?.done).length;
+    if (undone) box.appendChild(mk(`只刷未掌握的题（${undone}）`, 'subtle', () => startSession('econ_undo', SESSION.chapterIdx)));
     box.appendChild(mk('再刷一遍本章', 'subtle', () => startSession('econ', SESSION.chapterIdx)));
+    box.appendChild(mk('返回选题', 'ghost', () => nav('#/picker/econ/' + SESSION.chapterIdx)));
     box.appendChild(mk('返回经济基础', 'ghost', () => nav('#/econ')));
   } else {
     box.appendChild(mk(SESSION.kind === 'review' ? '返回复习页' : '返回错题本', 'ghost', () =>
@@ -479,19 +497,24 @@ ROUTES.econ = {
         </div>
       </div>
     </div>`;
-    const list = ECON_UNITS.map((c, i) => `
-      <button class="card chapter" data-ech="${i}">
+    const list = ECON_UNITS.map((c, i) => {
+      const done = c.ids.filter(id => P.q[id]?.done).length;
+      const pct = Math.round(done / c.ids.length * 100);
+      return `<button class="card chapter" data-ech="${i}">
         <div class="row1">
           <span class="no">${i+1}</span>
           <span class="name">${esc(c.chapter.title)}</span>
-          <span class="pct">${c.ids.length} 题</span>
+          <span class="pct ${pct >= 100 ? 'done' : ''}">${pct >= 100 ? '✓ 已完成' : pct + '%'}</span>
         </div>
-      </button>`).join('');
+        <div class="bar"><i class="${pct >= 100 ? 'full' : ''}" style="width:${pct}%"></i></div>
+        <div class="meta"><span>共 ${c.ids.length} 题</span><span>已掌握 ${done}</span></div>
+      </button>`;
+    }).join('');
     return hero + list;
   },
   after() {
     document.querySelectorAll('[data-ech]').forEach(el =>
-      el.addEventListener('click', () => startSession('econ', +el.dataset.ech)));
+      el.addEventListener('click', () => nav('#/picker/econ/' + el.dataset.ech)));
   }
 };
 
